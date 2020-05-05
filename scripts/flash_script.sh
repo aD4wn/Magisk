@@ -6,9 +6,9 @@
 #
 ############################################
 
-############################################
+##############
 # Preparation
-############################################
+##############
 
 COMMONDIR=$INSTALLER/common
 APK=$COMMONDIR/magisk.apk
@@ -30,12 +30,15 @@ fi
 
 setup_flashable
 
-############################################
+############
 # Detection
-############################################
+############
 
-PRETTY_VER=$MAGISK_VER
-echo $PRETTY_VER | grep -q '\.' && PRETTY_VER=v$PRETTY_VER
+if echo $MAGISK_VER | grep -q '\.'; then
+  PRETTY_VER=$MAGISK_VER
+else
+  PRETTY_VER="$MAGISK_VER($MAGISK_VER_CODE)"
+fi
 print_title "Magisk $PRETTY_VER Installer"
 
 is_mounted /data || mount /data || is_mounted /cache || mount /cache
@@ -60,9 +63,9 @@ chmod -R 755 $CHROMEDIR $BINDIR
 # Check if system root is installed and remove
 remove_system_su
 
-############################################
+##############
 # Environment
-############################################
+##############
 
 ui_print "- Constructing environment"
 
@@ -75,6 +78,7 @@ chmod -R 755 $MAGISKBIN
 # addon.d
 if [ -d /system/addon.d ]; then
   ui_print "- Adding addon.d survival script"
+  blockdev --setrw /dev/block/mapper/system$SLOT 2>/dev/null
   mount -o rw,remount /system
   ADDOND=/system/addon.d/99-magisk.sh
   cp -af $COMMONDIR/addon.d.sh $ADDOND
@@ -83,9 +87,9 @@ fi
 
 $BOOTMODE || recovery_actions
 
-############################################
+#####################
 # Boot/DTBO Patching
-############################################
+#####################
 
 install_magisk
 

@@ -12,11 +12,9 @@
 
 using namespace std;
 
-#define DEFAULT_DT_DIR "/proc/device-tree/firmware/android"
-
 static void parse_cmdline(const std::function<void (std::string_view, const char *)> &fn) {
 	char cmdline[4096];
-	int fd = open("/proc/cmdline", O_RDONLY | O_CLOEXEC);
+	int fd = xopen("/proc/cmdline", O_RDONLY | O_CLOEXEC);
 	cmdline[read(fd, cmdline, sizeof(cmdline))] = '\0';
 	close(fd);
 
@@ -100,12 +98,13 @@ void load_kernel_info(cmdline *cmd) {
 	xmkdir("/sys", 0755);
 	xmount("sysfs", "/sys", "sysfs", 0, nullptr);
 
-	bool enter_recovery = false;
-	bool kirin = false;
-	bool recovery_mode = false;
+	// Disable kmsg rate limiting
+	if (FILE *rate = fopen("/proc/sys/kernel/printk_devkmsg", "w")) {
+		fprintf(rate, "on\n");
+		fclose(rate);
+	}
 
 	parse_cmdline([&](auto key, auto value) -> void {
-		LOGD("cmdline: [%s]=[%s]\n", key.data(), value);
 		if (key == "androidboot.slot_suffix") {
 			strcpy(cmd->slot, value);
 		} else if (key == "androidboot.slot") {
@@ -117,40 +116,30 @@ void load_kernel_info(cmdline *cmd) {
 			cmd->force_normal_boot = value[0] == '1';
 		} else if (key == "androidboot.android_dt_dir") {
 			strcpy(cmd->dt_dir, value);
-		} else if (key == "enter_recovery") {
-			enter_recovery = value[0] == '1';
 		} else if (key == "androidboot.hardware") {
-			kirin = strstr(value, "kirin") || strstr(value, "hi3660") || strstr(value, "hi6250");
+			strcpy(cmd->hardware, value);
+		} else if (key == "androidboot.hardware.platform") {
+			strcpy(cmd->hardware_plat, value);
 		}
 	});
 
-	parse_prop_file("/.backup/.magisk", [&](auto key, auto value) -> bool {
-		if (key == "RECOVERYMODE" && value == "true")
-			recovery_mode = true;
+	parse_prop_file("/.backup/.magisk", [=](auto key, auto value) -> bool {
+		if (key == "RECOVERYMODE" && value == "true") {
+			LOGD("Running in recovery mode, waiting for key...\n");
+			cmd->skip_initramfs = !check_key_combo();
+			return false;
+		}
 		return true;
 	});
-
-	if (kirin && enter_recovery) {
-		// Inform that we are actually booting as recovery
-		if (!recovery_mode) {
-			if (FILE *f = fopen("/.backup/.magisk", "ae"); f) {
-				fprintf(f, "RECOVERYMODE=true\n");
-				fclose(f);
-			}
-			recovery_mode = true;
-		}
-	}
-
-	if (recovery_mode) {
-		LOGD("Running in recovery mode, waiting for key...\n");
-		cmd->skip_initramfs = !check_key_combo();
-	}
 
 	if (cmd->dt_dir[0] == '\0')
 		strcpy(cmd->dt_dir, DEFAULT_DT_DIR);
 
+	LOGD("Device info:\n");
 	LOGD("skip_initramfs=[%d]\n", cmd->skip_initramfs);
 	LOGD("force_normal_boot=[%d]\n", cmd->force_normal_boot);
 	LOGD("slot=[%s]\n", cmd->slot);
 	LOGD("dt_dir=[%s]\n", cmd->dt_dir);
+	LOGD("hardware=[%s]\n", cmd->hardware);
+	LOGD("hardware.platform=[%s]\n", cmd->hardware_plat);
 }

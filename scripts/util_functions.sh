@@ -1,9 +1,9 @@
-#########################################
+############################################
 #
 # Magisk General Utility Functions
 # by topjohnwu
 #
-#########################################
+############################################
 
 #MAGISK_VERSION_STUB
 
@@ -34,8 +34,10 @@ grep_prop() {
 
 getvar() {
   local VARNAME=$1
-  local VALUE=
-  VALUE=`grep_prop $VARNAME /sbin/.magisk/config /data/.magisk /cache/.magisk`
+  local VALUE
+  local PROPPATH='/data/.magisk /cache/.magisk'
+  [ -n $MAGISKTMP ] && PROPPATH="$MAGISKTMP/config $PROPPATH"
+  VALUE=$(grep_prop $VARNAME $PROPPATH)
   [ ! -z $VALUE ] && eval $VARNAME=\$VALUE
 }
 
@@ -47,6 +49,8 @@ is_mounted() {
 abort() {
   ui_print "$1"
   $BOOTMODE || recovery_cleanup
+  [ -n $MODPATH ] && rm -rf $MODPATH
+  rm -rf $TMPDIR
   exit 1
 }
 
@@ -57,11 +61,15 @@ resolve_vars() {
 }
 
 print_title() {
-  local len=$(echo -n $1 | wc -c)
+  local len line1len line2len pounds
+  line1len=$(echo -n $1 | wc -c)
+  line2len=$(echo -n $2 | wc -c)
+  [ $line1len -gt $line2len ] && len=$line1len || len=$line2len
   len=$((len + 2))
-  local pounds=$(printf "%${len}s" | tr ' ' '*')
+  pounds=$(printf "%${len}s" | tr ' ' '*')
   ui_print "$pounds"
   ui_print " $1 "
+  [ "$2" ] && ui_print " $2 "
   ui_print "$pounds"
 }
 
@@ -86,23 +94,40 @@ setup_flashable() {
 }
 
 ensure_bb() {
-  [ -o standalone ] && return
-  set -o standalone 2>/dev/null && return
+  if set -o | grep -q standalone; then
+    # We are definitely in busybox ash
+    set -o standalone
+    return
+  fi
 
-  # At this point, we are not running in BusyBox ash
   # Find our busybox binary
-  local BUSYBOX
+  local bb
   if [ -f $TMPDIR/busybox ]; then
-    BUSYBOX=$TMPDIR/busybox
+    bb=$TMPDIR/busybox
   elif [ -f $MAGISKBIN/busybox ]; then
-    BUSYBOX=$MAGISKBIN/busybox
+    bb=$MAGISKBIN/busybox
   else
     abort "! Cannot find BusyBox"
   fi
+  chmod 755 $bb
+
+  # Find our current arguments
+  # Run in busybox environment to ensure consistent results
+  # /proc/<pid>/cmdline shall be <interpreter> <script> <arguments...>
+  local cmds=$($bb sh -o standalone -c "
+  for arg in \$(tr '\0' '\n' < /proc/$$/cmdline); do
+    if [ -z \"\$cmds\" ]; then
+      # Skip the first argument as we want to change the interpreter
+      cmds=\"sh -o standalone\"
+    else
+      cmds=\"\$cmds '\$arg'\"
+    fi
+  done
+  echo \$cmds")
 
   # Re-exec our script
-  chmod 755 $BUSYBOX
-  exec $BUSYBOX sh -o standalone $0 "$@"
+  echo $cmds | $bb xargs $bb
+  exit
 }
 
 recovery_actions() {
@@ -134,7 +159,6 @@ recovery_cleanup() {
     fi
   done
   umount -l /dev/random) 2>/dev/null
-  export PATH=$OLD_PATH
   [ -z $OLD_LD_LIB ] || export LD_LIBRARY_PATH=$OLD_LD_LIB
   [ -z $OLD_LD_PRE ] || export LD_PRELOAD=$OLD_LD_PRE
   [ -z $OLD_LD_CFG ] || export LD_CONFIG_FILE=$OLD_LD_CFG
@@ -146,23 +170,32 @@ recovery_cleanup() {
 
 # find_block [partname...]
 find_block() {
+  local BLOCK DEV DEVICE DEVNAME PARTNAME UEVENT
   for BLOCK in "$@"; do
-    DEVICE=`find /dev/block -type l -iname $BLOCK | head -n 1` 2>/dev/null
+    DEVICE=`find /dev/block \( -type b -o -type c -o -type l \) -iname $BLOCK | head -n 1` 2>/dev/null
     if [ ! -z $DEVICE ]; then
       readlink -f $DEVICE
       return 0
     fi
   done
   # Fallback by parsing sysfs uevents
-  for uevent in /sys/dev/block/*/uevent; do
-    local DEVNAME=`grep_prop DEVNAME $uevent`
-    local PARTNAME=`grep_prop PARTNAME $uevent`
+  for UEVENT in /sys/dev/block/*/uevent; do
+    DEVNAME=`grep_prop DEVNAME $UEVENT`
+    PARTNAME=`grep_prop PARTNAME $UEVENT`
     for BLOCK in "$@"; do
-      if [ "`toupper $BLOCK`" = "`toupper $PARTNAME`" ]; then
+      if [ "$(toupper $BLOCK)" = "$(toupper $PARTNAME)" ]; then
         echo /dev/block/$DEVNAME
         return 0
       fi
     done
+  done
+  # Look just in /dev in case we're dealing with MTD/NAND without /dev/block devices/links
+  for DEV in "$@"; do
+    DEVICE=`find /dev \( -type b -o -type c -o -type l \) -maxdepth 1 -iname $DEV | head -n 1` 2>/dev/null
+    if [ ! -z $DEVICE ]; then
+      readlink -f $DEVICE
+      return 0
+    fi
   done
   return 1
 }
@@ -214,7 +247,7 @@ mount_partitions() {
 
   # Mount ro partitions
   mount_ro_ensure "system$SLOT app$SLOT" /system
-  if [ -f /system/init.rc ]; then
+  if [ -f /system/init -o -L /system/init ]; then
     SYSTEM_ROOT=true
     setup_mntpoint /system_root
     if ! mount --move /system /system_root; then
@@ -227,7 +260,8 @@ mount_partitions() {
     grep ' / ' /proc/mounts | grep -qv 'rootfs' || grep -q ' /system_root ' /proc/mounts \
     && SYSTEM_ROOT=true || SYSTEM_ROOT=false
   fi
-  [ -L /system/vendor ] && mount_ro_ensure vendor$SLOT /vendor
+  # /vendor is used only on some older devices for recovery AVBv1 signing so is not critical if fails
+  [ -L /system/vendor ] && mount_name vendor$SLOT /vendor '-o ro'
   $SYSTEM_ROOT && ui_print "- Device is system-as-root"
 
   # Allow /system/bin commands (dalvikvm) on Android 10+ in recovery
@@ -346,15 +380,15 @@ get_flags() {
 find_boot_image() {
   BOOTIMAGE=
   if $RECOVERYMODE; then
-    BOOTIMAGE=`find_block recovery_ramdisk$SLOT recovery sos`
+    BOOTIMAGE=`find_block recovery_ramdisk$SLOT recovery$SLOT sos`
   elif [ ! -z $SLOT ]; then
     BOOTIMAGE=`find_block ramdisk$SLOT recovery_ramdisk$SLOT boot$SLOT`
   else
-    BOOTIMAGE=`find_block ramdisk recovery_ramdisk kern-a android_boot kernel boot lnx bootimg boot_a`
+    BOOTIMAGE=`find_block ramdisk recovery_ramdisk kern-a android_boot kernel bootimg boot lnx boot_a`
   fi
   if [ -z $BOOTIMAGE ]; then
     # Lets see what fstabs tells me
-    BOOTIMAGE=`grep -v '#' /etc/*fstab* | grep -E '/boot[^a-zA-Z]' | grep -oE '/dev/[a-zA-Z0-9_./-]*' | head -n 1`
+    BOOTIMAGE=`grep -v '#' /etc/*fstab* | grep -E '/boot(img)?[^a-zA-Z]' | grep -oE '/dev/[a-zA-Z0-9_./-]*' | head -n 1`
   fi
 }
 
@@ -389,7 +423,7 @@ flash_image() {
 patch_dtb_partitions() {
   local result=1
   cd $MAGISKBIN
-  for name in dtb dtbo; do
+  for name in dtb dtbo dtbs; do
     local IMAGE=`find_block $name$SLOT`
     if [ ! -z $IMAGE ]; then
       ui_print "- $name image: $IMAGE"
@@ -418,8 +452,10 @@ install_magisk() {
     BOOTIMAGE=boot.img
   fi
 
-  eval $BOOTSIGNER -verify < $BOOTIMAGE && BOOTSIGNED=true
-  $BOOTSIGNED && ui_print "- Boot image is signed with AVB 1.0"
+  if [ $API -ge 21 ]; then
+    eval $BOOTSIGNER -verify < $BOOTIMAGE && BOOTSIGNED=true
+    $BOOTSIGNED && ui_print "- Boot image is signed with AVB 1.0"
+  fi
 
   $IS64BIT && mv -f magiskinit64 magiskinit 2>/dev/null || rm -f magiskinit64
 
@@ -461,6 +497,7 @@ sign_chromeos() {
 remove_system_su() {
   if [ -f /system/bin/su -o -f /system/xbin/su ] && [ ! -f /su/bin/su ]; then
     ui_print "- Removing system installed root"
+    blockdev --setrw /dev/block/mapper/system$SLOT 2>/dev/null
     mount -o rw,remount /system
     # SuperSU
     if [ -e /system/bin/.ext/.su ]; then
@@ -551,7 +588,7 @@ run_migrations() {
 
   # Stock backups
   LOCSHA1=$SHA1
-  for name in boot dtb dtbo; do
+  for name in boot dtb dtbo dtbs; do
     BACKUP=/data/adb/magisk/stock_${name}.img
     [ -f $BACKUP ] || continue
     if [ $name = 'boot' ]; then
@@ -610,7 +647,11 @@ is_legacy_script() {
 
 # Require OUTFD, ZIPFILE to be set
 install_module() {
-  local PERSISTDIR=/sbin/.magisk/mirror/persist
+  local PERSISTDIR
+  command -v magisk >/dev/null && PERSISTDIR=$(magisk --path)/mirror/persist
+
+  rm -rf $TMPDIR
+  mkdir -p $TMPDIR
 
   setup_flashable
   mount_partitions
@@ -623,11 +664,13 @@ install_module() {
   unzip -o "$ZIPFILE" module.prop -d $TMPDIR >&2
   [ ! -f $TMPDIR/module.prop ] && abort "! Unable to extract zip file!"
 
+  local MODDIRNAME
   $BOOTMODE && MODDIRNAME=modules_update || MODDIRNAME=modules
-  MODULEROOT=$NVBASE/$MODDIRNAME
+  local MODULEROOT=$NVBASE/$MODDIRNAME
   MODID=`grep_prop id $TMPDIR/module.prop`
-  MODPATH=$MODULEROOT/$MODID
   MODNAME=`grep_prop name $TMPDIR/module.prop`
+  MODAUTH=`grep_prop author $TMPDIR/module.prop`
+  MODPATH=$MODULEROOT/$MODID
 
   # Create mod paths
   rm -rf $MODPATH 2>/dev/null
@@ -653,7 +696,7 @@ install_module() {
     ui_print "- Setting permissions"
     set_permissions
   else
-    print_title "$MODNAME"
+    print_title "$MODNAME" "by $MODAUTH"
     print_title "Powered by Magisk"
 
     unzip -o "$ZIPFILE" customize.sh -d $MODPATH >&2
@@ -683,11 +726,13 @@ install_module() {
   fi
 
   # Copy over custom sepolicy rules
-  if [ -f $MODPATH/sepolicy.rule -a -e $PERSISTDIR ]; then
+  if [ -f $MODPATH/sepolicy.rule -a -e "$PERSISTDIR" ]; then
     ui_print "- Installing custom sepolicy patch"
+    # Remove old recovery logs (which may be filling partition) to make room
+    rm -f $PERSISTDIR/cache/recovery/*
     PERSISTMOD=$PERSISTDIR/magisk/$MODID
     mkdir -p $PERSISTMOD
-    cp -af $MODPATH/sepolicy.rule $PERSISTMOD/sepolicy.rule
+    cp -af $MODPATH/sepolicy.rule $PERSISTMOD/sepolicy.rule || abort "! Insufficient partition size"
   fi
 
   # Remove stuffs that don't belong to modules
@@ -711,13 +756,12 @@ install_module() {
 [ -z $BOOTMODE ] && ps -A 2>/dev/null | grep zygote | grep -qv grep && BOOTMODE=true
 [ -z $BOOTMODE ] && BOOTMODE=false
 
-MAGISKTMP=/sbin/.magisk
 NVBASE=/data/adb
-[ -z $TMPDIR ] && TMPDIR=/dev/tmp
+TMPDIR=/dev/tmp
 
 # Bootsigner related stuff
 BOOTSIGNERCLASS=a.a
-BOOTSIGNER="/system/bin/dalvikvm -Xnoimage-dex2oat -cp \$APK \$BOOTSIGNERCLASS"
+BOOTSIGNER='/system/bin/dalvikvm -Xnoimage-dex2oat -cp $APK $BOOTSIGNERCLASS'
 BOOTSIGNED=false
 
 resolve_vars

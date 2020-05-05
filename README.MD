@@ -1,41 +1,69 @@
-# Magisk
+![](docs/images/logo.png)
 
-[Downloads](https://github.com/topjohnwu/Magisk/releases) \| [Documentation](https://topjohnwu.github.io/Magisk/) \| [XDA Thread](https://forum.xda-developers.com/apps/magisk/official-magisk-v7-universal-systemless-t3473445)
+![ZIP Downloads](https://img.shields.io/badge/dynamic/json?color=blue&label=ZIP%20Downloads&query=magisk&url=https%3A%2F%2Fraw.githubusercontent.com%2Ftopjohnwu%2Fmagisk_files%2Fcount%2Fcount.json&cacheSeconds=1800)
+![APK Downloads](https://img.shields.io/badge/dynamic/json?color=green&label=APK%20Downloads&query=manager&url=https%3A%2F%2Fraw.githubusercontent.com%2Ftopjohnwu%2Fmagisk_files%2Fcount%2Fcount.json&cacheSeconds=1800)
 
 ## Introduction
 
-Magisk is a suite of open source tools for customizing Android, supporting devices higher than Android 4.2 (API 17). It covers the fundamental parts for Android customization: root, boot scripts, SELinux patches, AVB2.0 / dm-verity / forceencrypt removals etc.
+Magisk is a suite of open source tools for customizing Android, supporting devices higher than Android 4.2. It covers fundamental parts of Android customization: root, boot scripts, SELinux patches, AVB2.0 / dm-verity / forceencrypt removals etc.
 
-Furthermore, Magisk provides a **Systemless Interface** to alter the system (or vendor) arbitrarily while the actual partitions stay completely intact. With its systemless nature along with several other hacks, Magisk can almost perfectly hide modifications within userspace. Note that since 2020.3, the CTS check of [Google's SafetyNet API](https://developer.android.com/training/safetynet/index.html) will **NOT** pass.
+Here are some feature highlights:
+
+- **MagiskSU**: Provide root access to your device
+- **Magisk Modules**: Modify read-only partitions by installing modules
+- **MagiskHide**: Hide Magisk from root detections / system integrity checks
+
+## Download
+
+[![](https://img.shields.io/badge/Magisk%20Manager-v7.5.1-green)](https://github.com/topjohnwu/Magisk/releases/download/manager-v7.5.1/MagiskManager-v7.5.1.apk)
+[![](https://img.shields.io/badge/Magisk-v20.4-blue)](https://github.com/topjohnwu/Magisk/releases/download/v20.4/Magisk-v20.4.zip)
+[![](https://img.shields.io/badge/Magisk%20Beta-v20.4-blue)](https://github.com/topjohnwu/Magisk/releases/download/v20.4/Magisk-v20.4.zip)
+<br>
+[![](https://img.shields.io/badge/Magisk%20Manager-Canary-red)](https://raw.githubusercontent.com/topjohnwu/magisk_files/canary/app-release.apk)
+[![](https://img.shields.io/badge/Magisk%20Manager-Canary%20Debug-red)](https://raw.githubusercontent.com/topjohnwu/magisk_files/canary/app-debug.apk)
+
+## Useful Links
+
+- [Installation Instruction](https://topjohnwu.github.io/Magisk/install.html)
+- [OTA Upgrade Guide](https://topjohnwu.github.io/Magisk/ota.html)
+- [Full Official Docs](https://topjohnwu.github.io/Magisk/)
+- [Magisk Troubleshoot Wiki](https://www.didgeridoohan.com/magisk/HomePage) (by [@Didgeridoohan](https://github.com/Didgeridoohan))
+
+## Android Version Support
+
+- Android 4.2+: MagiskSU and Magisk Modules Only
+- Android 4.4+: All core features available
+- Android 6.0+: Guaranteed MagiskHide support
+- Android 7.0+: Full MagiskHide protection
+- Android 9.0+: Magisk Manager stealth mode
 
 ## Bug Reports
 
-**Only reports using debug canary builds will be accepted.** \
-Access canary builds by upgrading to either canary Magisk Manager:
-- [Canary Manager (Release)](https://raw.githubusercontent.com/topjohnwu/magisk_files/canary/app-release.apk)
-- [Canary Manager (Debug)](https://raw.githubusercontent.com/topjohnwu/magisk_files/canary/app-debug.apk)
+Canary Channels are cutting edge builds for those adventurous. To access canary builds, install either Canary Magisk Manager, switch to a Canary Channel in settings and upgrade.
 
-For installation issues, upload both boot image and install logs. \
-For Magisk issues, upload boot logcat or dmesg. \
+**Only bug reports from Canary DEBUG builds will be accepted.**
+
+For installation issues, upload both boot image and install logs.<br>
+For Magisk issues, upload boot logcat or dmesg.<br>
 For Magisk Manager crashes, record and upload the logcat when the crash occurs.
 
-## Building Environment Requirements
+## Building and Development
 
--  Python 3: run `build.py` script
--  Java Development Kit (JDK) 8: Compile Magisk Manager and sign zips
--  Latest Android SDK: set `ANDROID_HOME` environment variable to the path to Android SDK
--  Android NDK: Install NDK along with SDK (`$ANDROID_HOME/ndk-bundle`), or optionally specify a custom path `ANDROID_NDK_HOME`
--  (Windows Only) Python package Colorama: Install with `pip install colorama`, used for ANSI color codes
+- Magisk builds on any OS Android Studio supports. Install Android Studio and do the initial setups.
+- Clone sources: `git clone --recurse-submodules https://github.com/topjohnwu/Magisk.git`
+- Install Python 3.6+. For Windows, select 'Add Python to PATH' in installer, and run `pip install colorama` after install.
+- Configure to use the JDK bundled in Android Studio:
+	- macOS: `export JAVA_HOME="/Applications/Android Studio.app/Contents/jre/jdk/Contents/Home"`
+	- Linux: `export PATH="/path/to/androidstudio/jre/bin:$PATH"`
+	- Windows: Add `C:\Path\To\Android Studio\jre\bin` to environment variable `PATH`
+- Set environment variable `ANDROID_HOME` to the Android SDK folder (can be found in Android Studio settings)
+- Run `./build.py ndk` to let the script download and install NDK for you
+- Set configurations in `config.prop`. A sample `config.prop.sample` is provided.
+- To start building, run `build.py` to see your options. For each action, use `-h` to access help (e.g. `./build.py all -h`)
+- To start development, open the project in Android Studio. Both app (Kotlin/Java) and native (C++/C) source code can be properly developed using the IDE, but *always* use `build.py` for building.
+- `build.py` builds in debug mode by default. If you want release builds (with `-r, --release`), you need a Java Keystore to sign APKs and zips. For more information, check [Google's Documentation](https://developer.android.com/studio/publish/app-signing.html#generate-key).
 
-## Building Notes and Instructions
-
--  Clone sources with submodules: `git clone --recurse-submodules https://github.com/topjohnwu/Magisk.git`
--  Building is supported on macOS, Linux, and Windows. Official releases are built and tested with [FrankeNDK](https://github.com/topjohnwu/FrankeNDK); point `ANDROID_NDK_HOME` to FrankeNDK if you want to use it for compiling.
--  Set configurations in `config.prop`. A sample file `config.prop.sample` is provided as an example.
--  Run `build.py` with argument `-h` to see the built-in help message. The `-h` option also works for each supported actions, e.g. `./build.py binary -h`
--  By default, `build.py` build binaries and Magisk Manager in debug mode. If you want to build Magisk Manager in release mode (via the `-r, --release` flag), you need a Java Keystore file `release-key.jks` (only `JKS` format is supported) to sign APKs and zips. For more information, check out [Google's Official Documentation](https://developer.android.com/studio/publish/app-signing.html#signing-manually).
-
-## Translations
+## Translation Contributions
 
 Default string resources for Magisk Manager and its stub APK are located here:
 

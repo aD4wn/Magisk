@@ -4,6 +4,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <signal.h>
+#include <libgen.h>
 #include <sys/un.h>
 #include <sys/types.h>
 #include <sys/mount.h>
@@ -16,8 +17,11 @@
 #include <resetprop.hpp>
 #include <flags.h>
 
+using namespace std;
+
 int SDK_INT = -1;
 bool RECOVERY_MODE = false;
+string MAGISKTMP;
 static struct stat self_st;
 
 static void verify_client(int client, pid_t pid) {
@@ -46,11 +50,20 @@ static void *request_handler(void *args) {
 	case LATE_START:
 	case BOOT_COMPLETE:
 	case SQLITE_CMD:
+	case GET_PATH:
 		if (credential.uid != 0) {
 			write_int(client, ROOT_REQUIRED);
 			close(client);
 			return nullptr;
 		}
+		break;
+	case REMOVE_MODULES:
+		if (credential.uid != UID_SHELL && credential.uid != UID_ROOT) {
+			write_int(client, 1);
+			close(client);
+			return nullptr;
+		}
+		break;
 	default:
 		break;
 	}
@@ -83,12 +96,12 @@ static void *request_handler(void *args) {
 		exec_sql(client);
 		break;
 	case REMOVE_MODULES:
-		if (credential.uid == UID_SHELL || credential.uid == UID_ROOT) {
-			remove_modules();
-			write_int(client, 0);
-		} else {
-			write_int(client, 1);
-		}
+		remove_modules();
+		write_int(client, 0);
+		close(client);
+		break;
+	case GET_PATH:
+		write_string(client, MAGISKTMP.data());
 		close(client);
 		break;
 	default:
@@ -98,7 +111,7 @@ static void *request_handler(void *args) {
 	return nullptr;
 }
 
-static void main_daemon() {
+static void daemon_entry(int ppid) {
 	android_logging();
 
 	int fd = xopen("/dev/null", O_WRONLY);
@@ -110,29 +123,38 @@ static void main_daemon() {
 	xdup2(fd, STDIN_FILENO);
 	if (fd > STDERR_FILENO)
 		close(fd);
-	close(fd);
 
 	setsid();
 	setcon("u:r:" SEPOL_PROC_DOMAIN ":s0");
-	restore_rootcon();
 
-	// Unmount pre-init patches
-	if (access(ROOTMNT, F_OK) == 0) {
-		file_readline(true, ROOTMNT, [](auto line) -> bool {
+	// Make sure ppid is not in acct
+	char src[64], dest[64];
+	sprintf(src, "/acct/uid_0/pid_%d", ppid);
+	sprintf(dest, "/acct/uid_0/pid_%d", getpid());
+	rename(src, dest);
+
+	// Get self stat
+	xreadlink("/proc/self/exe", src, sizeof(src));
+	MAGISKTMP = dirname(src);
+	xstat("/proc/self/exe", &self_st);
+
+	restore_tmpcon();
+
+	// SAR cleanups
+	auto mount_list = MAGISKTMP + "/" ROOTMNT;
+	if (access(mount_list.data(), F_OK) == 0) {
+		file_readline(true, mount_list.data(), [](string_view line) -> bool {
 			umount2(line.data(), MNT_DETACH);
 			return true;
 		});
 	}
+	unlink("/dev/.se");
 
-	LOGI(SHOW_VER(Magisk) " daemon started\n");
-
-	// Get server stat
-	stat("/proc/self/exe", &self_st);
+	LOGI(NAME_WITH_VER(Magisk) " daemon started\n");
 
 	// Get API level
 	parse_prop_file("/system/build.prop", [](auto key, auto val) -> bool {
 		if (key == "ro.build.version.sdk") {
-			LOGI("* Device API level: %s\n", val.data());
 			SDK_INT = parse_int(val);
 			return false;
 		}
@@ -142,13 +164,14 @@ static void main_daemon() {
 		// In case some devices do not store this info in build.prop, fallback to getprop
 		auto sdk = getprop("ro.build.version.sdk");
 		if (!sdk.empty()) {
-			LOGI("* Device API level: %s\n", sdk.data());
 			SDK_INT = parse_int(sdk);
 		}
 	}
+	LOGI("* Device API level: %d\n", SDK_INT);
 
 	// Load config status
-	parse_prop_file(MAGISKTMP "/config", [](auto key, auto val) -> bool {
+	auto config = MAGISKTMP + "/" INTLROOT "/config";
+	parse_prop_file(config.data(), [](auto key, auto val) -> bool {
 		if (key == "RECOVERYMODE" && val == "true")
 			RECOVERY_MODE = true;
 		return true;
@@ -190,14 +213,7 @@ int connect_daemon(bool create) {
 		LOGD("client: launching new main daemon process\n");
 		if (fork_dont_care() == 0) {
 			close(fd);
-
-			// Make sure ppid is not in acct
-			char src[64], dest[64];
-			sprintf(src, "/acct/uid_0/pid_%d", ppid);
-			sprintf(dest, "/acct/uid_0/pid_%d", getpid());
-			rename(src, dest);
-
-			main_daemon();
+			daemon_entry(ppid);
 		}
 
 		while (connect(fd, (struct sockaddr*) &sun, len))
